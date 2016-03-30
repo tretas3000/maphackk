@@ -1,28 +1,146 @@
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+--[[#####   Minimap Hack Plus v0.3 by ViceVersa   #####]]--
+--[[SS-Visualizer, SS-Timer and Enemy-Position-Prediction.
+    Draws ss-timer and circle on minimap showing where an enemy can be calculated with their ms.
+    Use it with the BoL Minimap Hack for best map awareness!]]
 
-# Precompiled Headers
-*.gch
-*.pch
+    
+--Config
+--(Ingame-Shift-Menu)
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+--Vars
+local enemys = {}
+local missing_since = {}
+local missing_time = {}
+local traveled_distance = 0
 
-# Fortran module files
-*.mod
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+--Functions
+local _miniMapRatio = nil
+local function GetMinimapRatio()
+    if _miniMapRatio then return _miniMapRatio end
+    local windowWidth, windowHeight = 1
+    local gameSettings = GetGameSettings()
+    if gameSettings and gameSettings.General and gameSettings.General.Width and gameSettings.General.Height then
+        windowWidth, windowHeight = gameSettings.General.Width, gameSettings.General.Height
+        local hudSettings = ReadIni(GAME_PATH .. "DATA\\menu\\hud\\hud" .. windowWidth .. "x" .. windowHeight .. ".ini")
+        if hudSettings and hudSettings.Globals and hudSettings.Globals.MinimapScale then
+            _miniMapRatio = (windowHeight / 1080) * hudSettings.Globals.MinimapScale
+        else
+            _miniMapRatio = (windowHeight / 1080)
+        end
+    end
+end
 
-# Executables
-*.exe
-*.out
-*.app
+function DrawFilledCircleMinimap(x, z, radius, color)
+    assert(type(radius) == "number" and type(x) == "number" and type(z) == "number" and type(color) == "table", "DrawFilledCircleMinimap: wrong argument types (<number>, <number>, <number>, <table> expected)")
+    assert(string.len("•") == 1 and "•" ~= "?", "DrawFilledCircleMinimap: wrong encoding(Make sure to encode the function with ANSI and not with the BoL-Editor)")
+    GetMinimapRatio()
+    local size = radius/7.33*_miniMapRatio
+    local x = GetMinimapX(x)-(radius/47.83)*_miniMapRatio
+    local z = GetMinimapY(z)-(radius/14.86)*_miniMapRatio
+    DrawText("•", size, x, z, ARGB(color[1], color[2], color[3], color[4]))
+end
+
+
+--Callbacks
+function OnLoad()
+    --Fill enemy table and set missing_since to -1 to avoid errors
+    enemys = GetEnemyHeroes()
+    for i, enemy in ipairs(enemys) do
+        missing_since[i] = -1
+    end
+    
+    --Get _miniMapRatio
+    GetMinimapRatio()
+    
+    --Shift-Menu
+    MHPConfig = scriptConfig("MinimapHackPlus","Minimap Hack Plus")
+    MHPConfig:addParam("showTimer","Show missing timer", SCRIPT_PARAM_ONOFF, true)
+    MHPConfig:addParam("drawCircle","Show circle on minimap", SCRIPT_PARAM_ONOFF, true)
+    MHPConfig:addParam("filledCircle","Draw filled circle", SCRIPT_PARAM_ONOFF, false)
+    MHPConfig:addParam("minRadius", "Alert after: (Range)", SCRIPT_PARAM_SLICE, 2000, 1500, 3000, 0)
+    MHPConfig:addParam("maxRadius", "Max circle radius", SCRIPT_PARAM_SLICE, 5000, 3000, 9000, 0)
+    
+    --Print that Minimap Hack Plus has loaded
+    PrintChat(" >> Minimap Hack Plus v0.3 loaded!")
+end
+
+function OnTick()
+    --For each enemy
+    for i, enemy in ipairs(enemys) do
+    
+        --If enemy is not visible and not dead
+        if enemy.visible == false and enemy.dead == false then
+            --Start script only on champs seen at least once
+            if missing_since[i] ~= -1 then
+                --If enemy was not missing yet
+                if missing_since[i] == nil then
+                    --Set the missing moment to now
+                    missing_since[i] = GetTickCount()
+                end
+                --Calculate the missing time (now - moment since missing(/1000 to get seconds))
+                missing_time[i] = (GetTickCount() - missing_since[i]) / 1000
+            end
+        
+        --If enemy is visible again or dead
+        else
+            --Set missing moment to nil and missing time to 0
+            missing_since[i] = nil
+            missing_time[i] = 0
+        end
+    end
+end
+
+function OnDraw()
+    --For each enemy
+    for i, enemy in ipairs(enemys) do
+        --If enemy is not visible and not dead
+        if enemy.visible == false and enemy.dead == false and missing_since[i] ~= -1 then
+            
+            --Calculate the possible traveled distance with the movementspeed
+            traveled_distance = enemy.ms * missing_time[i]
+            
+            --If the enemy could have traveled more than 2000(seems like the best point to alert after some tests)
+            if traveled_distance > MHPConfig.minRadius then
+                --If the distance is shorter than the config
+                if traveled_distance < MHPConfig.maxRadius then
+                    
+                    --If show circle is enabled
+                    if MHPConfig.drawCircle then
+                        --Draw a cirlce on minimap showing the possible position
+                        if MHPConfig.filledCircle then
+                            DrawFilledCircleMinimap(enemy.x, enemy.z, traveled_distance, {50, 255, 0, 0}) --Expanding red circle
+                        else
+                            DrawCircleMinimap(enemy.x, enemy.y, enemy.z, traveled_distance, 2, 0xFFFF0000) --Expanding red circle
+                        end
+                    end
+                    
+                    --If show timer is enabled
+                    if MHPConfig.showTimer then
+                        --Draw the missing time on minimap
+                        DrawText(tostring(math.floor(missing_time[i])), 20, GetMinimapX(enemy.x)-6*GetMinimapRatio(), GetMinimapY(enemy.z)-6*GetMinimapRatio(), ARGB(255, 255, 255, 0)) --Yellow if under max range
+                    end
+                
+                --If the distance goes above the maxRadius
+                else
+                    
+                    --If show circle is enabled
+                    if MHPConfig.drawCircle then
+                        --Draw a cirlce on minimap showing the possible position
+                        if MHPConfig.filledCircle then
+                            DrawFilledCircleMinimap(enemy.x, enemy.z, MHPConfig.maxRadius, {50, 255, 0, 255}) --Stay at max range, turn the circle purple
+                        else
+                            DrawCircleMinimap(enemy.x, enemy.y, enemy.z, MHPConfig.maxRadius, 2, 4294902015) --Stay at max range, turn purple
+                        end
+                    end
+                    
+                    --If show timer is enabled
+                    if MHPConfig.showTimer then
+                        --Draw the missing time on minimap
+                        DrawText(tostring(math.floor(missing_time[i])), 20, GetMinimapX(enemy.x)-6*GetMinimapRatio(), GetMinimapY(enemy.z)-6*GetMinimapRatio(), ARGB(255, 255, 0, 0)) --Red if above max range
+                    end
+                end
+            end
+        end
+    end
+end
